@@ -143,9 +143,9 @@ struct Config {
     int skip_frames = 5;
     int preprocess_workers = 6;
     int inference_workers = 3;
-    int raw_queue_depth = 2;
-    int infer_queue_depth = 1;
-    int result_queue_depth = 1;
+    int raw_queue_depth = 4;
+    int infer_queue_depth = 4;
+    int result_queue_depth = 4;
 };
 
 struct RawFrame {
@@ -296,29 +296,29 @@ static bool parse_args(int argc, char** argv, Config* cfg)
     return true;
 }
 
-static int open_output_fd(const std::string& path)
-{
-    if (path == "-") {
-        int fd = dup(STDOUT_FILENO);
-        if (fd < 0) {
-            fprintf(stderr, "dup stdout failed: %s\n", strerror(errno));
-        }
-        return fd;
-    }
+	static int open_output_fd(const std::string& path)
+	{
+	    if (path == "-") {
+	        int fd = dup(STDOUT_FILENO);
+	        if (fd < 0) {
+	            fprintf(stderr, "dup stdout failed: %s\n", strerror(errno));
+	        }
+	        return fd;
+	    }
 
-    struct stat st;
-    int flags = O_WRONLY;
-    mode_t mode = 0644;
-    if (stat(path.c_str(), &st) != 0 || !S_ISFIFO(st.st_mode)) {
-        flags |= O_CREAT | O_TRUNC;
-    }
+	    struct stat st;
+	    int flags = O_WRONLY | O_NONBLOCK;
+	    mode_t mode = 0644;
+	    if (stat(path.c_str(), &st) != 0 || !S_ISFIFO(st.st_mode)) {
+	        flags |= O_CREAT | O_TRUNC;
+	    }
 
-    int fd = open(path.c_str(), flags, mode);
-    if (fd < 0) {
-        fprintf(stderr, "open output %s failed: %s\n", path.c_str(), strerror(errno));
-    }
-    return fd;
-}
+	    int fd = open(path.c_str(), flags, mode);
+	    if (fd < 0) {
+	        fprintf(stderr, "open output %s failed: %s\n", path.c_str(), strerror(errno));
+	    }
+	    return fd;
+	}
 
 static void silence_stdout()
 {
@@ -338,6 +338,10 @@ static bool write_all(int fd, const uint8_t* data, size_t size)
         if (ret < 0) {
             if (errno == EINTR) {
                 continue;
+            }
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                // pipe full, drop frame
+                return false;
             }
             fprintf(stderr, "write output failed: %s\n", strerror(errno));
             return false;
@@ -992,8 +996,8 @@ static void render_loop(int output_fd,
 
         if (!write_all(output_fd, detected.frame.nv12.data(), detected.frame.nv12.size())) {
             stats->output_errors++;
-            g_running.store(false);
-            break;
+            // non-blocking: pipe full is not fatal, just drop the frame
+            continue;
         }
         stats->last_stream_age_ms.store(now_ms() - detected.frame.timestamp_ms);
 
