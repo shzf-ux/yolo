@@ -307,7 +307,7 @@ static bool parse_args(int argc, char** argv, Config* cfg)
 	    }
 
 	    struct stat st;
-	    int flags = O_WRONLY | O_NONBLOCK;
+	    int flags = O_WRONLY;
 	    mode_t mode = 0644;
 	    if (stat(path.c_str(), &st) != 0 || !S_ISFIFO(st.st_mode)) {
 	        flags |= O_CREAT | O_TRUNC;
@@ -316,6 +316,13 @@ static bool parse_args(int argc, char** argv, Config* cfg)
 	    int fd = open(path.c_str(), flags, mode);
 	    if (fd < 0) {
 	        fprintf(stderr, "open output %s failed: %s\n", path.c_str(), strerror(errno));
+	        return fd;
+	    }
+
+	    // set non-blocking after open so open() waits for reader on FIFO
+	    int fl = fcntl(fd, F_GETFL, 0);
+	    if (fl >= 0) {
+	        fcntl(fd, F_SETFL, fl | O_NONBLOCK);
 	    }
 	    return fd;
 	}
