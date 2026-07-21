@@ -316,6 +316,17 @@ static int open_output_fd(const std::string& path)
     int fd = open(path.c_str(), flags, mode);
     if (fd < 0) {
         fprintf(stderr, "open output %s failed: %s\n", path.c_str(), strerror(errno));
+        return fd;
+    }
+
+    // Increase pipe buffer to 4MB so one full NV12 frame fits without blocking
+    if (S_ISFIFO(st.st_mode)) {
+        int pipe_sz = 4 * 1024 * 1024;
+        if (fcntl(fd, F_SETPIPE_SZ, pipe_sz) < 0) {
+            fprintf(stderr, "set pipe buffer to %d failed: %s\n", pipe_sz, strerror(errno));
+        } else {
+            fprintf(stderr, "pipe buffer set to %d bytes\n", pipe_sz);
+        }
     }
     return fd;
 }
