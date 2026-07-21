@@ -23,6 +23,9 @@ INC = -I$(SRC_DIR) \
       -I$(JPEG_INC) \
       -DLIBRGA_IM2D_HANDLE
 
+# MPP include path
+MPP_INC = -I$(JPEG_INC)/rockchip
+
 # RKNN include path
 RKNN_INC = -I/home/zzy/rk3588/rknn/rknn-toolkit2-master/rknpu2/include \
            -I/home/zzy/rk3588/rknn/rknn-toolkit2-master/rknpu2/runtime/Linux/librknn_api/include
@@ -44,7 +47,7 @@ image_utils.o: $(UTILS_DIR)/image_utils.c
 	$(CC) $(CFLAGS) $(INC) -c $< -o $@
 
 # === YOLO World objects ===
-YOLO_OBJS = postprocess.o clip_text.o yolo_world.o clip_tokenizer.o realtime_main.o
+YOLO_OBJS = postprocess.o clip_text.o yolo_world.o clip_tokenizer.o realtime_main.o mpp_enc.o
 
 postprocess.o: $(SRC_DIR)/postprocess.cc
 	$(CXX) $(CXXFLAGS) $(INC) $(RKNN_INC) -c $< -o $@
@@ -61,12 +64,15 @@ clip_tokenizer.o: $(SRC_DIR)/tokenizer/clip_tokenizer.cpp
 realtime_main.o: $(SRC_DIR)/realtime_main.cc
 	$(CXX) $(CXXFLAGS) $(INC) $(RKNN_INC) -c $< -o $@
 
+mpp_enc.o: $(SRC_DIR)/mpp_enc.cc
+	$(CXX) $(CXXFLAGS) $(INC) $(RKNN_INC) $(MPP_INC) -c $< -o $@
+
 # === Link ===
 rknn_yolo_world_realtime: $(YOLO_OBJS) $(UTILS_OBJS)
 	$(CXX) $(CXXFLAGS) -o $@ $^ \
 		-L/home/zzy/rk3588/RK3588-yolo-world--main/deploy/rknn_yolo_world_demo/lib \
 		-L/home/zzy/rk3588/rk3588_linux_sdk/buildroot/output/rockchip_atk_dlrk3588/host/aarch64-buildroot-linux-gnu/sysroot/usr/lib \
-		-lrknnrt -lrga -ljpeg -lturbojpeg $(LDFLAGS)
+		-lrknnrt -lrga -ljpeg -lturbojpeg -lrockchip_mpp $(LDFLAGS)
 
 clean:
 	rm -f *.o rknn_yolo_world_realtime
