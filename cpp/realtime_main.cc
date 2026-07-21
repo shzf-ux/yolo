@@ -41,7 +41,6 @@
 #include "image_drawing.h"
 #include "image_utils.h"
 #include "yolo_world.h"
-#include "mpp_enc.h"
 
 static std::atomic<bool> g_running(true);
 
@@ -146,7 +145,7 @@ struct Config {
     int inference_workers = 3;
     int raw_queue_depth = 2;
     int infer_queue_depth = 1;
-    int result_queue_depth = 1;
+    int result_queue_depth = 3;
 };
 
 struct RawFrame {
@@ -320,13 +319,11 @@ static int open_output_fd(const std::string& path)
         return fd;
     }
 
-    // Increase pipe buffer to 4MB so one full NV12 frame fits without blocking
+    // Expand pipe buffer to 4MB so one full NV12 frame fits without blocking
     if (S_ISFIFO(st.st_mode)) {
         int pipe_sz = 4 * 1024 * 1024;
         if (fcntl(fd, F_SETPIPE_SZ, pipe_sz) < 0) {
             fprintf(stderr, "set pipe buffer to %d failed: %s\n", pipe_sz, strerror(errno));
-        } else {
-            fprintf(stderr, "pipe buffer set to %d bytes\n", pipe_sz);
         }
     }
     return fd;
@@ -952,7 +949,7 @@ static void inference_loop(YoloWorker* worker,
     }
 }
 
-static void render_loop(mpp_enc_t* enc,
+static void render_loop(int output_fd,
                         int stream_fps,
                         DroppingQueue<DetectedFrame>* result_queue,
                         Stats* stats)
@@ -1002,11 +999,10 @@ static void render_loop(mpp_enc_t* enc,
             draw_text(&image, text, x1, std::max(0, y1 - 28), COLOR_RED, 18);
         }
 
-        // MPP hardware encode: NV12 → H.264 → pipe (compressed ~50-200KB vs 3MB raw)
-        int enc_ret = mpp_enc_encode(enc, detected.frame.nv12.data(), detected.frame.nv12.size());
-        if (enc_ret != 0) {
+        if (!write_all(output_fd, detected.frame.nv12.data(), detected.frame.nv12.size())) {
             stats->output_errors++;
-            // non-fatal: encoder may occasionally drop a frame
+            g_running.store(false);
+            break;
         }
         stats->last_stream_age_ms.store(now_ms() - detected.frame.timestamp_ms);
 
@@ -1139,17 +1135,6 @@ int main(int argc, char** argv)
     if (output_fd < 0) {
         return -1;
     }
-
-    // MPP hardware encoder: NV12 → H.264, writes compressed data to pipe
-    // (pipe carries ~50-200KB per frame instead of 3MB raw)
-    int bitrate = 8000000;
-    mpp_enc_t* enc = mpp_enc_create(cfg.width, cfg.height,
-                                     std::max(1, cfg.stream_fps), bitrate, output_fd);
-    if (!enc) {
-        fprintf(stderr, "mpp_enc_create failed\n");
-        close(output_fd);
-        return -1;
-    }
     silence_stdout();
 
     fprintf(stderr, "Realtime YOLO-World starting\n");
@@ -1159,7 +1144,7 @@ int main(int argc, char** argv)
 
     if (init_post_process_with_label_path(cfg.text_path.c_str()) != 0) {
         fprintf(stderr, "init post process failed\n");
-        mpp_enc_destroy(enc); close(output_fd);
+        close(output_fd);
         return -1;
     }
 
@@ -1167,7 +1152,7 @@ int main(int argc, char** argv)
     int text_size = 0;
     if (!build_text_embedding(cfg, &text_output, &text_size)) {
         deinit_post_process();
-        mpp_enc_destroy(enc); close(output_fd);
+        close(output_fd);
         return -1;
     }
 
@@ -1184,7 +1169,7 @@ int main(int argc, char** argv)
                 release_yolo_world_model(&workers[j].ctx);
             }
             deinit_post_process();
-            mpp_enc_destroy(enc); close(output_fd);
+            close(output_fd);
             return -1;
         }
 
@@ -1205,7 +1190,7 @@ int main(int argc, char** argv)
             release_yolo_world_model(&worker.ctx);
         }
         deinit_post_process();
-        mpp_enc_destroy(enc); close(output_fd);
+        close(output_fd);
         return -1;
     }
 
@@ -1244,7 +1229,7 @@ int main(int argc, char** argv)
                                        &stats);
     }
 
-    std::thread render_thread(render_loop, enc, cfg.stream_fps, &result_queue, &stats);
+    std::thread render_thread(render_loop, output_fd, cfg.stream_fps, &result_queue, &stats);
     std::thread stats_thread(stats_loop, &raw_queue, &infer_queue, &result_queue, &stats);
 
     while (g_running.load()) {
@@ -1281,7 +1266,7 @@ int main(int argc, char** argv)
         release_yolo_world_model(&worker.ctx);
     }
     deinit_post_process();
-    mpp_enc_destroy(enc); close(output_fd);
+    close(output_fd);
 
     fprintf(stderr,
             "Realtime YOLO-World stopped. captured=%llu preprocessed=%llu inferred=%llu streamed=%llu "
